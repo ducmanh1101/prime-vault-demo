@@ -128,6 +128,7 @@ export const useClaimReceipt = () => {
 export const useClaimReceiptCrossChain = () => {
   const { smartAccountAddress, sendUserOperation, signerAddress } =
     useSmartAccount();
+  const pubMain = useMainChainClient();
 
   return useMutation({
     mutationFn: async ({
@@ -139,6 +140,7 @@ export const useClaimReceiptCrossChain = () => {
     }) => {
       if (!signerAddress) throw new Error("Please connect wallet!");
       if (!smartAccountAddress) throw new Error("Smart account not ready!");
+      if (!pubMain) throw new Error("Please connect wallet!");
       const { transactionRequest } = await getStepTransaction(lifiStep);
 
       if (
@@ -149,7 +151,28 @@ export const useClaimReceiptCrossChain = () => {
       if (!transactionRequest?.to || !transactionRequest?.data)
         throw new Error("Bridge data not found!");
 
-      const calls: Transaction[] = [
+      const calls: Transaction[] = [];
+
+      const allowance = await pubMain.readContract({
+        abi: erc20Abi,
+        address: lifiStep.action.fromToken.address as Hex,
+        functionName: "allowance",
+        args: [smartAccountAddress, transactionRequest.to as Hex],
+      });
+
+      if (!allowance || allowance < BigInt(lifiStep.action.fromAmount)) {
+        calls.push({
+          to: lifiStep.action.fromToken.address as Hex,
+          value: 0n,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [transactionRequest.to as Hex, maxUint256],
+          }),
+        });
+      }
+
+      calls.push(
         {
           to: STAKING_ADDRESS,
           value: 0n,
@@ -163,8 +186,8 @@ export const useClaimReceiptCrossChain = () => {
           to: transactionRequest.to as Hex,
           value: 0n,
           data: transactionRequest.data as Hex,
-        },
-      ];
+        }
+      );
 
       return await sendUserOperation(calls);
     },
